@@ -7,7 +7,8 @@
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "geometry_msgs/msg/point.hpp"
-#include "std_srvs/srv/trigger.hpp" // Required for the Service
+#include "std_srvs/srv/trigger.hpp"
+#include "aisd_mass_spring/srv/set_system_values.hpp"
 
 using namespace std::chrono_literals;
 
@@ -23,34 +24,69 @@ public:
         dt_ = 0.02;
 
         position_ = 0.0; // Start at equilibrium
-        velocity_ = 0.0; // Start at rest (we will use the service to start motion)
+        velocity_ = 0.0; // Start at rest
 
         // --- 2. Publishers ---
         marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "visualization_marker_array", 10);
         
-        // Energy Publishers (Checkpoint 2)
+        // Energy Publishers
         ke_pub_ = this->create_publisher<std_msgs::msg::Float32>("kinetic_energy", 10);
         pe_pub_ = this->create_publisher<std_msgs::msg::Float32>("potential_energy", 10);
         total_e_pub_ = this->create_publisher<std_msgs::msg::Float32>("total_energy", 10);
 
-        // --- 3. Service Server (Checkpoint 2) ---
-        // Creates a service named "apply_force"
+        // --- 3. Force Service ---
         force_service_ = this->create_service<std_srvs::srv::Trigger>(
             "apply_force",
             std::bind(&MassSpringSim::apply_force_callback, this, std::placeholders::_1, std::placeholders::_2)
         );
 
-        // --- 4. Timer ---
+        // --- 4. Parameter Service (FIXED) ---
+        // Fixed: Changed MassSpringNode to MassSpringSim
+        param_service_ = this->create_service<aisd_mass_spring::srv::SetSystemValues>(
+            "/set_system_params",
+            std::bind(&MassSpringSim::update_params_callback, this, std::placeholders::_1, std::placeholders::_2)
+        );
+        
+        // --- 5. Timer ---
         timer_ = this->create_wall_timer(
             std::chrono::duration<double>(dt_), 
             std::bind(&MassSpringSim::update_physics, this));
 
         RCLCPP_INFO(this->get_logger(), "Simulation Ready. Call /apply_force to kick the mass.");
+        RCLCPP_INFO(this->get_logger(), "Service /set_system_params is ready.");
     }
 
 private:
-    // This function runs whenever someone calls the service
+    // --- Member Variables ---
+    double mass_, k_, b_, dt_; // NOTE: Variables are named k_ and b_
+    double position_, velocity_;
+    
+    rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr ke_pub_, pe_pub_, total_e_pub_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr force_service_;
+    rclcpp::Service<aisd_mass_spring::srv::SetSystemValues>::SharedPtr param_service_;
+
+    // --- Callbacks ---
+
+    // Fixed: Using correct variable names k_ and b_
+    void update_params_callback(
+        const std::shared_ptr<aisd_mass_spring::srv::SetSystemValues::Request> request,
+        std::shared_ptr<aisd_mass_spring::srv::SetSystemValues::Response> response)
+    {
+        // Update physics variables
+        k_ = request->k;
+        b_ = request->b;
+
+        // Log it
+        RCLCPP_INFO(this->get_logger(), "Params Updated -> k: %.2f, b: %.2f", k_, b_);
+
+        // Reply
+        response->success = true;
+        response->message = "Physics parameters updated.";
+    }
+        
     void apply_force_callback(
         const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response)
@@ -58,7 +94,6 @@ private:
         (void)request; // Unused parameter
         
         // Apply a sudden "kick" (Impulse)
-        // Physically, Impulse J = m * delta_v. Since m=1, we add to velocity.
         velocity_ += 3.0; 
 
         response->success = true;
@@ -78,7 +113,7 @@ private:
         velocity_ += acceleration * dt_;
         position_ += velocity_ * dt_;
 
-        // Energy Calculation [cite: 128-129]
+        // Energy Calculation
         double ke = 0.5 * mass_ * std::pow(velocity_, 2);
         double pe = 0.5 * k_ * std::pow(position_, 2);
         double total_e = ke + pe;
@@ -93,7 +128,6 @@ private:
 
         publish_markers();
     }
-
 
     void publish_markers()
     {
@@ -129,13 +163,6 @@ private:
 
         marker_pub_->publish(marker_array);
     }
-
-    double mass_, k_, b_, dt_;
-    double position_, velocity_;
-    rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr ke_pub_, pe_pub_, total_e_pub_;
-    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr force_service_;
 };
 
 int main(int argc, char * argv[])
